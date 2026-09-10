@@ -405,7 +405,13 @@ llama_context::llama_context(
             /*.minimum_stage_bytes =*/ kv_stream_minimum_stage_bytes,
             /*.arch_qwen35         =*/ model.arch == LLM_ARCH_QWEN35,
             /*.context_default     =*/ cparams.ctx_type == LLAMA_CONTEXT_TYPE_DEFAULT,
-            /*.single_sequence     =*/ cparams.n_seq_max == 1,
+            // Block KV streaming needs a single KV *stream* (n_stream == 1), not
+            // literally one sequence. With a unified KV buffer, n_stream is 1
+            // even for n_seq_max > 1 (see llama_kv_cache ctor:
+            // n_stream = unified ? 1 : n_seq_max), so -np 2 --kv-unified is fine:
+            // both slots share one streamed buffer. Lets the main agent + an aux
+            // harness slot (vision / hygiene / compression) run on one context.
+            /*.single_sequence     =*/ cparams.n_seq_max == 1 || cparams.kv_unified,
             /*.flash_attention     =*/ cparams.flash_attn,
             /*.kv_offload          =*/ cparams.offload_kqv,
         };
