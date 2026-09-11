@@ -3270,12 +3270,16 @@ private:
 
                                 const auto n_cache_reuse = slot.task->params.n_cache_reuse;
 
+                                const bool can_shift_tgt = llama_memory_can_shift(llama_get_memory(ctx_tgt));
                                 const bool can_cache_reuse =
-                                    llama_memory_can_shift(llama_get_memory(ctx_tgt)) &&
+                                    can_shift_tgt &&
                                     !slot.prompt.tokens.has_mtmd;
 
                                 if (!can_cache_reuse && n_cache_reuse > 0) {
-                                    SLT_WRN(slot, "cache reuse is not supported - ignoring n_cache_reuse = %d\n", n_cache_reuse);
+                                    SLT_WRN(slot, "cache reuse is not supported - ignoring n_cache_reuse = %d "
+                                            "(can_shift=%d has_mtmd=%d)\n",
+                                            n_cache_reuse, (int) can_shift_tgt,
+                                            (int) slot.prompt.tokens.has_mtmd);
                                 }
 
                                 // reuse chunks from the cached prompt by shifting their KV cache in the new position
