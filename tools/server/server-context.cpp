@@ -2815,6 +2815,26 @@ private:
         for (auto & slot : slots) {
             if (slot.is_processing()) {
                 send_error(slot, reason, ERROR_TYPE_SERVER);
+                // release() deliberately leaves prompt.tokens intact on the
+                // normal path -- that is what lets the NEXT request on this
+                // slot reuse the cached prefix instead of reprocessing it.
+                // Here that's wrong: pre_decode()/decode()/post_decode() just
+                // threw (OOM in graph_reserve() is the observed case,
+                // 2026-09-12), which happens before the batch's tokens are
+                // actually written into the KV cache -- so prompt.tokens can
+                // claim N cached tokens for a sequence whose KV cache is
+                // still empty. The next request to land on this slot then
+                // computes n_past from that stale count, finds
+                // seq_pos_min() == -1 with n_past > 0, and hits the
+                // GGML_ABORT a few hundred lines below in pre_decode() --
+                // turning one failed request into a full server crash.
+                // prompt_clear() (mem.seq_rm + prompt.clear()) is the same
+                // reset already used for child slots on release(); using it
+                // here just means this slot reprocesses from scratch next
+                // time, which is correct and cheap next to aborting the
+                // whole process. seq_rm(id, -1, -1) never shifts positions,
+                // so it's safe on IMROPE models too (see get_can_shift()).
+                slot.prompt_clear();
                 slot.release();
             }
         }
