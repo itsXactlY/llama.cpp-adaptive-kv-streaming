@@ -1654,6 +1654,17 @@ json server_task_result_slot_erase::to_json() {
 }
 
 //
+// server_task_result_slot_splice
+//
+json server_task_result_slot_splice::to_json() {
+    return json {
+        { "id_slot",        id_slot },
+        { "n_removed",      n_removed },
+        { "n_tokens_after", n_tokens_after },
+    };
+}
+
+//
 // server_task_result_get_lora
 //
 

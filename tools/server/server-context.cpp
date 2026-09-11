@@ -2667,6 +2667,66 @@ private:
                     res->n_erased = n_erased;
                     queue_results.send(std::move(res));
                 } break;
+            case SERVER_TASK_TYPE_SLOT_SPLICE:
+                {
+                    const int id_slot = task.slot_action.id_slot;
+                    server_slot * slot = get_slot_by_id(id_slot);
+                    if (slot == nullptr) {
+                        send_error(task, "Invalid slot ID", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    if (slot->is_processing()) {
+                        // same rule as SLOT_ERASE: never touch a slot mid-decode,
+                        // only between turns.
+                        SRV_DBG("requested slot is unavailable, defer task, id_task = %d\n", task.id);
+                        queue_tasks.defer(std::move(task));
+                        break;
+                    }
+
+                    const int32_t pos_start = task.slot_action.pos_start;
+                    const int32_t pos_end   = task.slot_action.pos_end;
+                    const int32_t n_cached  = (int32_t) slot->prompt.tokens.size();
+
+                    if (slot->prompt.tokens.has_mtmd) {
+                        send_error(task, "splice is not supported for multimodal prompts", ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+                    if (pos_start < 0 || pos_end <= pos_start || pos_end > n_cached) {
+                        send_error(task, string_format(
+                            "invalid splice range [%d, %d) for slot with %d cached tokens",
+                            pos_start, pos_end, n_cached), ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
+                    const int32_t n_discard = pos_end - pos_start;
+
+                    // Remove [pos_start, pos_end) from the live KV and re-tag
+                    // everything after it (RoPE position shift, no recompute) —
+                    // the same primitive normal context-shift uses in pre_decode().
+                    slot->mem.seq_rm (slot->id, pos_start, pos_end);
+                    slot->mem.seq_add(slot->id, pos_end, slot->prompt.tokens.pos_next(), -n_discard);
+
+                    // mirror the shift in the slot's own record of cached tokens
+                    {
+                        llama_tokens new_tokens = slot->prompt.tokens.get_tokens(); // copy
+                        for (size_t i = pos_end; i < new_tokens.size(); i++) {
+                            new_tokens[i - n_discard] = new_tokens[i];
+                        }
+                        new_tokens.resize(new_tokens.size() - n_discard);
+
+                        slot->prompt.clear();
+                        slot->prompt.tokens.insert(new_tokens);
+                    }
+
+                    slot->truncated = true;
+
+                    auto res = std::make_unique<server_task_result_slot_splice>();
+                    res->id             = task.id;
+                    res->id_slot        = id_slot;
+                    res->n_removed      = (size_t) n_discard;
+                    res->n_tokens_after = slot->prompt.tokens.size();
+                    queue_results.send(std::move(res));
+                } break;
             case SERVER_TASK_TYPE_GET_LORA:
                 {
                     // TODO @ngxson : make lora_adapters a dedicated member of server_context
@@ -4754,10 +4814,6 @@ void server_routes::init_routes() {
 
     this->post_slots = [this](const server_http_req & req) {
         auto res = create_response();
-        if (params.slot_save_path.empty()) {
-            res->error(format_error_response("This server does not support slots action. Start it with `--slot-save-path`", ERROR_TYPE_NOT_SUPPORTED));
-            return res;
-        }
 
         std::string id_slot_str = req.get_param("id_slot");
 
@@ -4770,6 +4826,17 @@ void server_routes::init_routes() {
         }
 
         std::string action = req.get_param("action");
+
+        // splice edits the live KV cache in memory; unlike save/restore it
+        // needs no --slot-save-path.
+        if (action == "splice") {
+            return handle_slots_splice(req, id_slot);
+        }
+
+        if (params.slot_save_path.empty()) {
+            res->error(format_error_response("This server does not support slots action. Start it with `--slot-save-path`", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
 
         if (action == "save") {
             return handle_slots_save(req, id_slot);
@@ -5367,6 +5434,55 @@ std::unique_ptr<server_res_generator> server_routes::handle_slots_erase(const se
     }
 
     GGML_ASSERT(dynamic_cast<server_task_result_slot_erase*>(result.get()) != nullptr);
+    res->ok(result->to_json());
+    return res;
+}
+
+// Remove a token range from a slot's live KV cache and re-tag (RoPE-shift) the
+// tail, instead of forcing a client to resend a shorter prompt and eat a full
+// re-prefill of everything past the edit point. Body: {"pos_start": N, "pos_end": M}
+// (half-open token range in the slot's OWN cached-token indexing, as reported by
+// GET /slots). Fails if the slot is mid-generation (defers), out of range, or
+// multimodal (not supported, same as context-shift).
+std::unique_ptr<server_res_generator> server_routes::handle_slots_splice(const server_http_req & req, int id_slot) {
+    auto res = create_response();
+
+    json body;
+    try {
+        body = json::parse(req.body);
+    } catch (const std::exception & e) {
+        res->error(format_error_response(std::string("invalid JSON body: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    if (!body.contains("pos_start") || !body.contains("pos_end")) {
+        res->error(format_error_response("\"pos_start\" and \"pos_end\" are required", ERROR_TYPE_INVALID_REQUEST));
+        return res;
+    }
+
+    auto & rd = res->rd;
+    {
+        server_task task(SERVER_TASK_TYPE_SLOT_SPLICE);
+        task.id = rd.get_new_id();
+        task.slot_action.id_slot   = id_slot;
+        task.slot_action.pos_start = body.at("pos_start").get<int32_t>();
+        task.slot_action.pos_end   = body.at("pos_end").get<int32_t>();
+        rd.post_task(std::move(task));
+    }
+
+    auto result = rd.next(req.should_stop);
+    if (!result) {
+        // connection was closed
+        GGML_ASSERT(req.should_stop());
+        return res;
+    }
+
+    if (result->is_error()) {
+        res->error(result->to_json());
+        return res;
+    }
+
+    GGML_ASSERT(dynamic_cast<server_task_result_slot_splice*>(result.get()) != nullptr);
     res->ok(result->to_json());
     return res;
 }

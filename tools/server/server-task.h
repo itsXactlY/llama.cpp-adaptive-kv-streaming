@@ -25,6 +25,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_SAVE,
     SERVER_TASK_TYPE_SLOT_RESTORE,
     SERVER_TASK_TYPE_SLOT_ERASE,
+    SERVER_TASK_TYPE_SLOT_SPLICE,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
 };
@@ -161,11 +162,18 @@ struct server_task {
 
     server_task_type type;
 
-    // used by SERVER_TASK_TYPE_SLOT_SAVE, SERVER_TASK_TYPE_SLOT_RESTORE, SERVER_TASK_TYPE_SLOT_ERASE
+    // used by SERVER_TASK_TYPE_SLOT_SAVE, SERVER_TASK_TYPE_SLOT_RESTORE, SERVER_TASK_TYPE_SLOT_ERASE,
+    // SERVER_TASK_TYPE_SLOT_SPLICE
     struct slot_action {
         int id_slot;
         std::string filename;
         std::string filepath;
+
+        // SLOT_SPLICE only: half-open token range [pos_start, pos_end) to remove
+        // from this slot's live KV cache; everything after pos_end is re-tagged
+        // (RoPE shift, no recompute) down by (pos_end - pos_start) positions.
+        int32_t pos_start = -1;
+        int32_t pos_end   = -1;
     };
     slot_action slot_action;
 
@@ -531,6 +539,14 @@ struct server_task_result_slot_save_load : server_task_result {
 
 struct server_task_result_slot_erase : server_task_result {
     size_t n_erased;
+
+    virtual json to_json() override;
+};
+
+struct server_task_result_slot_splice : server_task_result {
+    int    id_slot;
+    size_t n_removed;      // tokens dropped from the KV, [pos_start, pos_end)
+    size_t n_tokens_after; // slot's cached token count after the splice
 
     virtual json to_json() override;
 };
