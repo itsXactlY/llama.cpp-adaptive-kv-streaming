@@ -135,7 +135,16 @@ llama_memory_context_ptr llama_memory_hybrid::init_update(llama_context * lctx, 
 
 bool llama_memory_hybrid::get_can_shift() const {
     // Shifting is trivially supported for recurrent
-    return mem_attn->get_can_shift();
+    const bool res = mem_attn->get_can_shift();
+    // TEMP DIAGNOSTIC 2026-09-11: see the matching one in
+    // llama_kv_cache::get_can_shift() -- settling why n_cache_reuse reports
+    // can_shift=0 for a hybrid Qwen3.5 build.
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        LLAMA_LOG_WARN("%s: [diag] mem_attn->get_can_shift() = %d\n", __func__, (int) res);
+    }
+    return res;
 }
 
 void llama_memory_hybrid::clear(bool data) {
