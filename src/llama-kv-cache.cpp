@@ -1315,23 +1315,26 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
 }
 
 bool llama_kv_cache::get_can_shift() const {
-    // TEMP DIAGNOSTIC 2026-09-11: n_cache_reuse reports can_shift=0 live
-    // against a hybrid Qwen3.5 build where this function's own conditions
-    // (arch != STEP35, n_pos_per_embd() == 1) should both pass. One-shot
-    // print of the actual arch id and n_pos_per_embd to settle it, then
-    // remove this block.
-    {
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            LLAMA_LOG_WARN("%s: [diag] arch=%d (STEP35=%d) n_pos_per_embd=%u\n",
-                __func__, (int) model.arch, (int) LLM_ARCH_STEP35, hparams.n_pos_per_embd());
-        }
-    }
     // Step35 uses per-layer RoPE dims; K-shift assumes a single global n_rot.
     if (model.arch == LLM_ARCH_STEP35) {
         return false;
     }
+    // RESOLVED 2026-09-11: this is why n_cache_reuse reports can_shift=0 for
+    // Qwen3.5. It's not the STEP35 case above (that's an unrelated arch,
+    // Step-3.5 -- easy to misread as "Qwen3.5" at a glance). QWEN35's RoPE
+    // type is LLAMA_ROPE_TYPE_IMROPE (llama_model_rope_type(), inherited
+    // from the same interleaved-mrope family as Qwen3-VL), which makes
+    // n_pos_per_embd() == 4 even for pure-text use with no image tokens.
+    // seq_add()/seq_div() hard-assert n_pos_per_embd() == 1 (see their
+    // definitions above), because a 4-component RoPE position isn't a
+    // scalar you can shift by a constant the way plain NeoX/GLM RoPE is --
+    // so this correctly refuses, on every IMROPE model, not just this one.
+    // There is no server-side fix for this cache: K-shift, n_cache_reuse,
+    // and any seq_add()-based cache splice are all unavailable here by
+    // construction, not by bug. Context management for these models has to
+    // avoid position-shifting cache surgery entirely (truncate a live
+    // sequence's tail with seq_rm(..., -1), which needs no shift, rather
+    // than editing the middle and relocating what follows).
     if (hparams.n_pos_per_embd() > 1) {
         return false;
     }

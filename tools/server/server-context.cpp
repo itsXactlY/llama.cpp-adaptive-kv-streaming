@@ -2700,6 +2700,22 @@ private:
 
                     const int32_t n_discard = pos_end - pos_start;
 
+                    // seq_add() (the shift below) hard-asserts n_pos_per_embd() == 1
+                    // and aborts the whole process otherwise -- unconditionally, even
+                    // for a shift of 0 or an empty range. IMROPE models (Qwen3.5
+                    // included) are always n_pos_per_embd() == 4, so this is not
+                    // reachable only in the "no tail to shift" case; it must be
+                    // refused up front for every splice on such a model. Verified by
+                    // reading llama_kv_cache::seq_add(): the assert precedes even the
+                    // `shift == 0` early-out. See llama_kv_cache::get_can_shift().
+                    if (!llama_memory_can_shift(llama_get_memory(ctx_tgt))) {
+                        send_error(task,
+                            "splice is not supported by this context (cache cannot be K-shifted, "
+                            "e.g. an IMROPE model such as Qwen3.5) -- seq_add() would abort the server",
+                            ERROR_TYPE_INVALID_REQUEST);
+                        break;
+                    }
+
                     // Remove [pos_start, pos_end) from the live KV and re-tag
                     // everything after it (RoPE position shift, no recompute) —
                     // the same primitive normal context-shift uses in pre_decode().
