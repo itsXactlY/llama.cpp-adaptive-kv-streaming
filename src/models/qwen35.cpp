@@ -88,10 +88,14 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", il), {n_embd,   n_ff}, flags);
         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, flags);
-        // Parallel FFN variants — loaded like standard FFN tensors.
-        layer.ffn_gate_par = create_tensor(tn(LLM_TENSOR_FFN_GATE_PAR, "weight", il), {n_embd,   n_ff}, flags);
-        layer.ffn_down_par = create_tensor(tn(LLM_TENSOR_FFN_DOWN_PAR, "weight", il), {  n_ff, n_embd}, flags);
-        layer.ffn_up_par   = create_tensor(tn(LLM_TENSOR_FFN_UP_PAR,   "weight", il), {n_embd,   n_ff}, flags);
+        // Parallel FFN variants exist only in some GGUFs (Agnes). Every other
+        // qwen35 model has none of them, so they must be optional: required,
+        // they made the loader reject the Qwen3.8-27B with
+        // "tensor 'blk.0.ffn_gate_par.weight' not found". build_layer_ffn only
+        // takes the parallel path when all three are present.
+        layer.ffn_gate_par = create_tensor(tn(LLM_TENSOR_FFN_GATE_PAR, "weight", il), {n_embd,   n_ff}, flags | TENSOR_NOT_REQUIRED);
+        layer.ffn_down_par = create_tensor(tn(LLM_TENSOR_FFN_DOWN_PAR, "weight", il), {  n_ff, n_embd}, flags | TENSOR_NOT_REQUIRED);
+        layer.ffn_up_par   = create_tensor(tn(LLM_TENSOR_FFN_UP_PAR,   "weight", il), {n_embd,   n_ff}, flags | TENSOR_NOT_REQUIRED);
     };
 
     auto load_block_mtp = [&](int il) {

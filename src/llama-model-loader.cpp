@@ -717,7 +717,9 @@ llama_model_loader::llama_model_loader(
             tensor_names.push_back(kv.first);
         }
         llm_arch overridden = llm_arch_from_string_with_tensor_check(arch_name, tensor_names);
-        if (overridden != LLM_ARCH_UNKNOWN) {
+        // Only an actual change is an override; the check returns the declared
+        // arch unchanged for every normal model.
+        if (overridden != LLM_ARCH_UNKNOWN && overridden != llm_arch_from_string(arch_name)) {
             LLAMA_LOG_INFO("%s: overriding arch from '%s' to '%s' based on tensor signature\n",
                     __func__, arch_name.c_str(), llm_arch_name(overridden));
             llm_kv = LLM_KV(overridden);
