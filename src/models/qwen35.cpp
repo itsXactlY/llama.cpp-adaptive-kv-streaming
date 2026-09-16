@@ -88,12 +88,10 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", il), {n_embd,   n_ff}, flags);
         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, flags);
-        // Parallel FFN variants are not used by the graph. Some quantizers
-        // (e.g. Agnes) emit them with non-standard shapes — mark SKIP so the
-        // loader accounts for them in the tensor count without loading.
-        layer.ffn_gate_par = create_tensor(tn(LLM_TENSOR_FFN_GATE_PAR, "weight", il), {n_embd,   n_ff}, flags | TENSOR_SKIP);
-        layer.ffn_down_par = create_tensor(tn(LLM_TENSOR_FFN_DOWN_PAR, "weight", il), {  n_ff, n_embd}, flags | TENSOR_SKIP);
-        layer.ffn_up_par   = create_tensor(tn(LLM_TENSOR_FFN_UP_PAR,   "weight", il), {n_embd,   n_ff}, flags | TENSOR_SKIP);
+        // Parallel FFN variants — loaded like standard FFN tensors.
+        layer.ffn_gate_par = create_tensor(tn(LLM_TENSOR_FFN_GATE_PAR, "weight", il), {n_embd,   n_ff}, flags);
+        layer.ffn_down_par = create_tensor(tn(LLM_TENSOR_FFN_DOWN_PAR, "weight", il), {  n_ff, n_embd}, flags);
+        layer.ffn_up_par   = create_tensor(tn(LLM_TENSOR_FFN_UP_PAR,   "weight", il), {n_embd,   n_ff}, flags);
     };
 
     auto load_block_mtp = [&](int il) {
@@ -472,17 +470,35 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
 
     return cur;
 }
-
 ggml_tensor * llama_model_qwen35::graph::build_layer_ffn(ggml_tensor * cur, const int il) {
-    // Qwen3.5 does not use MoE FFN
+    GGML_ASSERT(model.layers[il].ffn_up   != nullptr);
+    GGML_ASSERT(model.layers[il].ffn_gate != nullptr);
+    GGML_ASSERT(model.layers[il].ffn_down != nullptr);
     GGML_ASSERT(model.layers[il].ffn_gate_inp == nullptr);
 
-    cur = build_ffn(cur,
+    // Both paths take the same input (the pre-FFN residual)
+    ggml_tensor * x = cur;
+
+    // Standard FFN path: down( SiLU( up(x) ) * gate(x) )
+    cur = build_ffn(x,
         model.layers[il].ffn_up, NULL, model.layers[il].ffn_up_s,
         model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
         model.layers[il].ffn_down, NULL, model.layers[il].ffn_down_s,
         NULL,
         LLM_FFN_SILU, LLM_FFN_PAR, il);
+
+    // Parallel FFN path: down_par( SiLU( up_par(x) ) * gate_par(x) )
+    // Agnes has BOTH ffn_* and ffn_*_par tensors per layer
+    if (model.layers[il].ffn_up_par && model.layers[il].ffn_gate_par && model.layers[il].ffn_down_par) {
+        ggml_tensor * ffn_par = build_ffn(x,
+            model.layers[il].ffn_up_par, NULL, model.layers[il].ffn_up_par_s,
+            model.layers[il].ffn_gate_par, NULL, model.layers[il].ffn_gate_par_s,
+            model.layers[il].ffn_down_par, NULL, model.layers[il].ffn_down_par_s,
+            NULL,
+            LLM_FFN_SILU, LLM_FFN_PAR, il);
+        cur = ggml_add(ctx0, cur, ffn_par);
+    }
+
     cb(cur, "ffn_out", il);
 
     return cur;
