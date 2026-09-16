@@ -707,6 +707,23 @@ llama_model_loader::llama_model_loader(
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
     }
 
+    // Override arch if tensor names indicate a different architecture (e.g., a
+    // model tagged as "qwen35" in GGUF metadata that actually contains dflash
+    // tensors such as d2t, markov_w1.weight, selector_hidden.weight).
+    if (!arch_name.empty() && arch_name != "unknown") {
+        std::vector<std::string> tensor_names;
+        tensor_names.reserve(weights_map.size());
+        for (const auto & kv : weights_map) {
+            tensor_names.push_back(kv.first);
+        }
+        llm_arch overridden = llm_arch_from_string_with_tensor_check(arch_name, tensor_names);
+        if (overridden != LLM_ARCH_UNKNOWN) {
+            LLAMA_LOG_INFO("%s: overriding arch from '%s' to '%s' based on tensor signature\n",
+                    __func__, arch_name.c_str(), llm_arch_name(overridden));
+            llm_kv = LLM_KV(overridden);
+        }
+    }
+
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
 
@@ -1327,6 +1344,14 @@ struct ggml_tensor * llama_model_loader::create_tensor(
     }
 
     LLAMA_LOG_DEBUG("%s: loading tensor %s\n", __func__, tn.str().c_str());
+    // TENSOR_SKIP tensors are accounted for in the count but never validated or loaded.
+    if (flags & TENSOR_SKIP) {
+        // Only count if the tensor actually exists in the GGUF.
+        if (get_tensor_meta(tn.str().c_str()) != NULL) {
+            n_created++;
+        }
+        return nullptr;
+    }
     const struct ggml_tensor * cur = check_tensor_dims(tn.str(), ne, !(flags & TENSOR_NOT_REQUIRED), flags & TENSOR_ALLOW_RESHAPE);
     if (cur == NULL) {
         return NULL;

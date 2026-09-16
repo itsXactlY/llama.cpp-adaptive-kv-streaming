@@ -441,6 +441,9 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_FFN_GATE,                               "blk.%d.ffn_gate" },
     { LLM_TENSOR_FFN_DOWN,                               "blk.%d.ffn_down" },
     { LLM_TENSOR_FFN_UP,                                 "blk.%d.ffn_up" },
+    { LLM_TENSOR_FFN_GATE_PAR,                           "blk.%d.ffn_gate_par" },
+    { LLM_TENSOR_FFN_DOWN_PAR,                           "blk.%d.ffn_down_par" },
+    { LLM_TENSOR_FFN_UP_PAR,                             "blk.%d.ffn_up_par" },
     { LLM_TENSOR_FFN_GATE_EXP,                           "blk.%d.ffn_gate.%d" },
     { LLM_TENSOR_FFN_DOWN_EXP,                           "blk.%d.ffn_down.%d" },
     { LLM_TENSOR_FFN_UP_EXP,                             "blk.%d.ffn_up.%d" },
@@ -736,6 +739,9 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_FFN_GATE,                   {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_FFN_DOWN,                   {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_FFN_UP,                     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_FFN_GATE_PAR,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_FFN_DOWN_PAR,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+    {LLM_TENSOR_FFN_UP_PAR,                 {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_FFN_DOWN_SHEXP,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_FFN_GATE_SHEXP,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
     {LLM_TENSOR_FFN_UP_SHEXP,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
@@ -1044,6 +1050,44 @@ llm_arch llm_arch_from_string(const std::string & name) {
     }
 
     return LLM_ARCH_UNKNOWN;
+}
+
+// Detects when a model's GGUF claims one arch (e.g. qwen35) but its tensors
+// carry signatures of another (e.g. dflash). Returns the overridden arch or
+// the original one unchanged.
+llm_arch llm_arch_from_string_with_tensor_check(const std::string & name,
+                                                 const std::vector<std::string> & tensor_names) {
+    llm_arch arch = llm_arch_from_string(name);
+
+    // If the declared arch is not qwen35, trust it.
+    if (arch != LLM_ARCH_QWEN35) {
+        return arch;
+    }
+
+    // Count dflash-specific signature tensors.
+    int dflash_score = 0;
+    for (const auto & tn : tensor_names) {
+        // d2t is a top-level tensor in dflash (e.g. "d2t"), but qwen35 nextn
+        // models have them as blk.X.nextn.d2t_X_Y. Only count top-level d2t.
+        if (tn == "d2t" || (tn.find("d2t") == 0 && tn.find('/') == std::string::npos)) {
+            dflash_score += 3;
+        }
+        if (tn.find("markov_w1")   != std::string::npos) dflash_score += 3;
+        if (tn.find("selector_hidden") != std::string::npos) dflash_score += 2;
+        if (tn.find("transition_mlp.up_proj") != std::string::npos) dflash_score += 1;
+        if (tn.find(".gate2")      != std::string::npos) dflash_score += 1;
+        if (tn.find(".mlp2")       != std::string::npos) dflash_score += 1;
+    }
+
+    // If we see strong dflash signatures, override to dflash.
+    if (dflash_score >= 4) {
+        LLAMA_LOG_INFO("%s: overriding arch from '%s' to 'dflash' "
+                       "(detected %d dflash signature score from %zu tensors)\n",
+                       __func__, name.c_str(), dflash_score, tensor_names.size());
+        return LLM_ARCH_DFLASH;
+    }
+
+    return arch;
 }
 
 const llm_tensor_info & llm_tensor_info_for(llm_tensor tensor) {

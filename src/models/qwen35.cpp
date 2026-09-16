@@ -88,6 +88,12 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", il), {n_embd,   n_ff}, flags);
         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, flags);
+        // Parallel FFN variants are not used by the graph. Some quantizers
+        // (e.g. Agnes) emit them with non-standard shapes — mark SKIP so the
+        // loader accounts for them in the tensor count without loading.
+        layer.ffn_gate_par = create_tensor(tn(LLM_TENSOR_FFN_GATE_PAR, "weight", il), {n_embd,   n_ff}, flags | TENSOR_SKIP);
+        layer.ffn_down_par = create_tensor(tn(LLM_TENSOR_FFN_DOWN_PAR, "weight", il), {  n_ff, n_embd}, flags | TENSOR_SKIP);
+        layer.ffn_up_par   = create_tensor(tn(LLM_TENSOR_FFN_UP_PAR,   "weight", il), {n_embd,   n_ff}, flags | TENSOR_SKIP);
     };
 
     auto load_block_mtp = [&](int il) {

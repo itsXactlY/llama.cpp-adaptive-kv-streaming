@@ -464,6 +464,9 @@ enum llm_tensor {
     LLM_TENSOR_FFN_GATE,
     LLM_TENSOR_FFN_DOWN,
     LLM_TENSOR_FFN_UP,
+    LLM_TENSOR_FFN_GATE_PAR, // parallel gate (Megatron-style)
+    LLM_TENSOR_FFN_DOWN_PAR,
+    LLM_TENSOR_FFN_UP_PAR,
     LLM_TENSOR_FFN_ACT,
     LLM_TENSOR_FFN_DOWN_EXP,  // split experts for backward compatibility
     LLM_TENSOR_FFN_GATE_EXP,
@@ -780,6 +783,9 @@ std::vector<llm_arch> llm_arch_all();
 const char * llm_arch_name(llm_arch arch);
 
 llm_arch llm_arch_from_string(const std::string & name);
+
+llm_arch llm_arch_from_string_with_tensor_check(const std::string & name,
+                                                 const std::vector<std::string> & tensor_names);
 
 const llm_tensor_info & llm_tensor_info_for(llm_tensor tensor);
 
