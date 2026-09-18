@@ -20,6 +20,8 @@ else()
     if (GGML_CUDA)
         add_subdirectory(kv-stream-bench)
     endif()
+
+    add_subdirectory(kv-mean-center)
     add_subdirectory(llama-bench)
     add_subdirectory(completion)
     add_subdirectory(perplexity)
