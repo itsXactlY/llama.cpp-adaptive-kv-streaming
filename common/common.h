@@ -108,6 +108,7 @@ enum llama_example {
     LLAMA_EXAMPLE_EXPORT_GRAPH_OPS,
     LLAMA_EXAMPLE_DOWNLOAD,
     LLAMA_EXAMPLE_TOKENIZE,
+    LLAMA_EXAMPLE_KV_MEAN_CENTER,
 
     LLAMA_EXAMPLE_COUNT,
 };
@@ -587,6 +588,10 @@ struct common_params {
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
     uint32_t kv_stream_stage_mib = 0;        // block-streaming staging budget, 0 = disabled [EXPERIMENTAL]
+
+    // path to a K-cache mean-centering bias file (GGUF), or empty to disable.
+    // only takes effect when cache_type_k == GGML_TYPE_Q4_0; see docs/kv-mean-center.md
+    std::string kv_mean_center_path = "";
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 
