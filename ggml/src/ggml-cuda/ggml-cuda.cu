@@ -4268,7 +4268,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
                 ggml_is_contiguous(node->src[0]) && ggml_is_contiguous(node->src[1]) &&
                 ggml_is_contiguous(node) && ggml_is_contiguous(rms_norm) && ggml_is_contiguous(mul) &&
                 ggml_can_fuse_subgraph(cgraph, i, 3, ops, out_nodes, 2) &&
-                ggml_cuda_check_fusion_memory_ranges(cgraph, i, 3, ops, out_nodes, 2)) {
+                ggml_cuda_check_fusion_memory_ranges(cgraph, i, 3, out_nodes, 2)) {
             const ggml_tensor * weight = mul->src[0] == rms_norm ? mul->src[1] : mul->src[0];
             if (weight && weight->type == GGML_TYPE_F32 && ggml_is_contiguous(weight) &&
                     weight->ne[0] == node->ne[0] && ggml_nrows(weight) == 1) {
