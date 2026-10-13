@@ -1548,6 +1548,47 @@ private:
         return nullptr;
     }
 
+    // agents behind one harness share a long system/tool prefix, so the LCP match
+    // for agent B is often agent A's idle slot, and taking it truncates A's
+    // conversation. unless the prompt continues `src` (diverges only in its tail),
+    // start it in an empty slot that shares src's prefix: the unified KV cells are
+    // tagged for both sequences (no copy) and the recurrent state comes back from
+    // src's newest checkpoint at or below the shared prefix in the normal restore path
+    server_slot * fork_shared_prefix(server_slot & src, const server_tokens & tokens) {
+        const size_t n_src = src.prompt.tokens.size();
+        const size_t n_lcp = src.prompt.tokens.get_common_prefix(tokens);
+        if (n_src - n_lcp <= std::max<size_t>(512, n_src/20)) {
+            return nullptr; // continuation of src's conversation (or a rewound tail)
+        }
+
+        server_slot * dst = nullptr;
+        for (auto & s : slots) {
+            if (!s.is_processing() && s.prompt.tokens.empty()) {
+                dst = &s;
+                break;
+            }
+        }
+        if (dst == nullptr) {
+            return nullptr;
+        }
+
+        dst->mem.seq_rm(dst->id, -1, -1);
+        if (params_base.kv_unified && n_lcp > 0) {
+            src.mem.seq_cp(src.id, dst->id, -1, -1);
+            dst->prompt.tokens = src.prompt.tokens.clone();
+            for (auto it = src.prompt.checkpoints.rbegin(); it != src.prompt.checkpoints.rend(); ++it) {
+                if (it->n_tokens <= (int64_t) n_lcp) {
+                    dst->prompt.checkpoints.push_back(*it);
+                    break;
+                }
+            }
+        }
+
+        SLT_INF(*dst, "forked from slot %d instead of overwriting it (shared prefix %zu of %zu tokens)\n",
+                src.id, n_lcp, n_src);
+        return dst;
+    }
+
     server_slot * get_available_slot(const server_task & task) {
         server_slot * ret = nullptr;
 
@@ -1614,6 +1655,14 @@ private:
                 // if we are about to lose a large portion of the existing context - save it in the prompt cache
                 if (f_keep < 0.5f) {
                     update_cache = true;
+                }
+
+                if (task.id_slot == -1) {
+                    server_slot * forked = fork_shared_prefix(*ret, task.tokens);
+                    if (forked) {
+                        ret          = forked;
+                        update_cache = false;
+                    }
                 }
             }
         }
