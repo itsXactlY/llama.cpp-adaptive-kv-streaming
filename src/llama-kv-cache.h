@@ -330,6 +330,7 @@ private:
         uint32_t layer_count = 0;
         uint32_t minimum_ring_slots = 0;
         uint32_t decode_layout_pages = 0;
+        uint32_t layout_votes = 0;
         uint32_t starved_evaluations = 0;
         uint32_t overprovisioned_evaluations = 0;
         uint32_t evaluations_since_repartition = UINT32_MAX;

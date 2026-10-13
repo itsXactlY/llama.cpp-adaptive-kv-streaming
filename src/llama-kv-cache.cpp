@@ -1407,9 +1407,20 @@ bool llama_kv_cache::kv_stream_adapt(uint32_t active_tokens, uint32_t query_toke
     // repartitioning. Decode-like microbatches concentrate the same page
     // budget into fewer split layers, bounded by the ring working set so copy
     // and compute can still overlap. A zero target restores prefill.
+    //
+    // Each layout switch syncs the device and drops the whole resident cache.
+    // With several slots a batch mixes one slot's prompt chunk with another's
+    // decode, and the batch's narrow tail ubatch would flip to the decode
+    // layout only for the next wide ubatch to flip it back. A wide ubatch
+    // still leaves the decode layout at once (the extent grows fast there);
+    // entering it takes DECODE_LAYOUT_VOTES consecutive narrow ubatches.
+    constexpr uint32_t DECODE_LAYOUT_VOTES = 3;
+    const bool decode_like = query_tokens <= MAX_DECODE_QUERY_TOKENS;
+    owner.layout_votes = decode_like ? std::min<uint32_t>(owner.layout_votes + 1, DECODE_LAYOUT_VOTES) : 0;
+    const bool use_decode_layout = decode_like &&
+        (owner.decode_layout_pages != 0 || owner.layout_votes >= DECODE_LAYOUT_VOTES);
     const uint32_t decode_layout_pages =
-        query_tokens <= MAX_DECODE_QUERY_TOKENS && active_pages > resident_pages ?
-            active_pages : 0;
+        use_decode_layout && active_pages > resident_pages ? active_pages : 0;
     const bool entering_decode_layout =
         decode_layout_pages != 0 && decode_layout_pages != owner.decode_layout_pages;
 
