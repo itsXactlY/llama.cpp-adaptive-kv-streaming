@@ -914,6 +914,10 @@ private:
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
+    // --prefill-share: decode-only time still owed after a prompt batch ran beside generating slots
+    int64_t prefill_debt_us    = 0;
+    bool    batch_mixed_prompt = false;
+
     server_metrics metrics;
 
     // queued prompt stats - llama_decode() is async, so the timing is only valid after a sync
@@ -3015,6 +3019,21 @@ private:
             llama_set_embeddings(ctx_tgt, slot_batched->need_embd());
         }
 
+        const int64_t t_batch_start = ggml_time_us();
+        struct prefill_share_accounting {
+            server_context_impl & srv;
+            int64_t t_start;
+            ~prefill_share_accounting() {
+                const int64_t dt = ggml_time_us() - t_start;
+                const float share = srv.params_base.prefill_share;
+                if (srv.batch_mixed_prompt) {
+                    srv.prefill_debt_us += (int64_t) (dt * (1.0f - share) / share);
+                } else if (srv.prefill_debt_us > 0) {
+                    srv.prefill_debt_us = std::max<int64_t>(0, srv.prefill_debt_us - dt);
+                }
+            }
+        } prefill_accounting { *this, t_batch_start };
+
         llama_batch batch_view;
         int32_t off_next = 0;
         int32_t n_batch = llama_n_batch(ctx_tgt);
@@ -3075,7 +3094,18 @@ private:
             execute_drafts();
             checkpoint_drafts();
             apply_sampled_tokens();
+
+            // with slots generating, a prompt batch costs a whole prefill chunk per
+            // decode step; after one, run decode-only batches until the time is repaid
+            const int32_t n_decode_tokens = srv.batch.size();
+            if (n_decode_tokens == 0) {
+                srv.prefill_debt_us = 0;
+            } else if (srv.prefill_debt_us > 0) {
+                srv.batch_mixed_prompt = false;
+                return;
+            }
             schedule_prompts();
+            srv.batch_mixed_prompt = n_decode_tokens > 0 && srv.batch.size() > n_decode_tokens;
         }
 
         // apply context-shift if needed

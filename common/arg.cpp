@@ -1713,6 +1713,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CTX_CHECKPOINTS_TOTAL").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--prefill-share"}, "F",
+        string_format("max share of wall time spent on prompt processing while other slots are generating; "
+            "the rest runs decode-only steps (default: %.2f, 1 = no limit)", (double) params.prefill_share),
+        [](common_params & params, const std::string & value) {
+            params.prefill_share = std::stof(value);
+            if (params.prefill_share <= 0.0f || params.prefill_share > 1.0f) {
+                throw std::invalid_argument("prefill-share must be in (0, 1]");
+            }
+        }
+    ).set_env("LLAMA_ARG_PREFILL_SHARE").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-cms", "--checkpoint-min-step"}, "N",
         string_format("minimum spacing between context checkpoints in tokens (default: %d, 0 = no minimum)", params.checkpoint_min_step),
         [](common_params & params, int value) {

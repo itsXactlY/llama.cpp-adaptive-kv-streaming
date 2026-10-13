@@ -634,6 +634,7 @@ struct common_params {
     bool    cache_idle_slots    = true;  // save and clear idle slots upon starting a new task
     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
     int32_t n_ctx_checkpoints_total = -1; // max checkpoints across all slots; -1 = n_ctx_checkpoints, 0 = no cap
+    float   prefill_share       = 0.5f;  // max wall-time share of prompt batches while other slots generate; 1 = no limit
     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
