@@ -1553,6 +1553,11 @@ private:
         if (task.id_slot != -1) {
             ret = get_slot_by_id(task.id_slot);
             if (ret) {
+                // busy: the caller defers the task. saving/loading the prompt cache here
+                // would rewrite the KV of a running generation on every retry
+                if (ret->is_processing()) {
+                    return ret;
+                }
                 SLT_INF(*ret, "selected slot by id (%d)\n", task.id_slot);
             }
         }
@@ -1649,6 +1654,8 @@ private:
                 if (!ret->prompt_load(*prompt_cache, task.tokens)) {
                     ret->prompt_clear();
                 }
+
+                enforce_checkpoint_budget(*ret, 0);
 
                 prompt_cache->update();
 
@@ -2305,6 +2312,68 @@ private:
         return true;
     }
 
+    // picks the slot that gives up its oldest checkpoint when the shared cap is hit:
+    // idle LRU slots first (keeping their newest), then the slot holding the most,
+    // then idle slots' last one, then `cur` itself; other busy slots keep at least one
+    server_slot * checkpoint_victim(const server_slot & cur) {
+        server_slot * best = nullptr;
+
+        auto idle_lru = [&](size_t min_size) {
+            for (auto & s : slots) {
+                if (&s == &cur || s.is_processing() || s.prompt.checkpoints.size() < min_size) {
+                    continue;
+                }
+                if (!best || s.t_last_used < best->t_last_used) {
+                    best = &s;
+                }
+            }
+            return best;
+        };
+
+        if (idle_lru(2)) {
+            return best;
+        }
+        for (auto & s : slots) {
+            if (s.prompt.checkpoints.size() >= 2 && (!best || s.prompt.checkpoints.size() > best->prompt.checkpoints.size())) {
+                best = &s;
+            }
+        }
+        if (best || idle_lru(1)) {
+            return best;
+        }
+        return cur.prompt.checkpoints.empty() ? nullptr : const_cast<server_slot *>(&cur);
+    }
+
+    // context checkpoints hold a full copy of the recurrent state (~150 MiB on a 27B hybrid),
+    // so a per-slot limit multiplies by -np; this caps them across all slots
+    void enforce_checkpoint_budget(const server_slot & cur, size_t reserve) {
+        const int32_t n_max = params_base.n_ctx_checkpoints_total < 0 ?
+            params_base.n_ctx_checkpoints : params_base.n_ctx_checkpoints_total;
+        if (n_max <= 0) {
+            return;
+        }
+
+        while (true) {
+            size_t n_total = 0;
+            for (const auto & s : slots) {
+                n_total += s.prompt.checkpoints.size();
+            }
+            if (n_total + reserve <= (size_t) n_max) {
+                break;
+            }
+
+            server_slot * victim = checkpoint_victim(cur);
+            if (!victim) {
+                break;
+            }
+
+            const auto & ckpt = victim->prompt.checkpoints.front();
+            SLT_INF(*victim, "giving back context checkpoint for the shared cap (%zu/%d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                    n_total, n_max, ckpt.n_tokens, (float) ckpt.size() / 1024 / 1024);
+            victim->prompt.checkpoints.pop_front();
+        }
+    }
+
     // n_tokens_cur: the number of tokens added to the batch for the current slot
     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
         const int id_task = slot.task->id;
@@ -2334,6 +2403,8 @@ private:
 
             slot.prompt.checkpoints.erase(slot.prompt.checkpoints.begin());
         }
+
+        enforce_checkpoint_budget(slot, 1);
 
         auto & cur = slot.prompt.checkpoints.emplace_back();
 
