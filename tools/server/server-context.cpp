@@ -3134,6 +3134,9 @@ private:
         std::vector<server_slot *> generating;
         std::vector<server_slot *> drafting;
 
+        // slots still reading a prompt, this one included, that share the rest of the batch
+        int32_t n_prompt_slots = 0;
+
         explicit pre_decode_pipeline(server_context_impl & srv) : srv(srv) {}
 
         void run() {
@@ -3369,6 +3372,15 @@ private:
 
                 bool add_ok = true;  // false means the batch is full, skip remaining slots
 
+                // prompts split the batch: walked in index order, the first slot took every
+                // batch until its whole prompt was in and the other slot's request just waited
+                n_prompt_slots = 0;
+                for (auto & slot : srv.slots) {
+                    if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED) {
+                        n_prompt_slots++;
+                    }
+                }
+
                 srv.iterate(srv.slots, [&](server_slot & slot) {
                     if (!add_ok || srv.batch.size() >= n_batch) {
                         return;  // batch is full, skip remaining slots
@@ -3392,7 +3404,9 @@ private:
                     // this slot still has a prompt to be processed
 
                     if (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED) {
-                        if (!process_slot_prompt(slot, n_batch, n_ubatch, add_ok, alora_scale, alora_disabled_id)) {
+                        const bool ok = process_slot_prompt(slot, n_batch, n_ubatch, add_ok, alora_scale, alora_disabled_id);
+                        n_prompt_slots--;
+                        if (!ok) {
                             return;
                         }
                     }
@@ -3827,8 +3841,13 @@ private:
             const auto & spans         = slot.task->params.message_spans;
             const auto   last_user_pos = spans.last_user_message_pos();
 
+            // an unsplittable prompt needs the whole batch; the others get an even share of what is left
+            const int32_t n_batch_end = slot.can_split() && n_prompt_slots > 1
+                ? srv.batch.size() + std::max<int32_t>(1, (n_batch - srv.batch.size()) / n_prompt_slots)
+                : n_batch;
+
             // add prompt tokens for processing in the current batch
-            while (slot.prompt.n_tokens() < slot.task->n_tokens() && srv.batch.size() < n_batch) {
+            while (slot.prompt.n_tokens() < slot.task->n_tokens() && srv.batch.size() < n_batch_end) {
                 // get next token to process
                 llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
                 if (cur_tok == LLAMA_TOKEN_NULL) {
