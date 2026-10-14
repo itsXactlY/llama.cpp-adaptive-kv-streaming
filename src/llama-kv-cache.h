@@ -5,6 +5,7 @@
 #include "llama-kv-cells.h"
 #include "llama-memory.h"
 
+#include <array>
 #include <unordered_map>
 #include <vector>
 
@@ -187,6 +188,7 @@ public:
     //
 
     uint32_t get_n_kv(const slot_info & sinfo) const;
+    uint32_t get_n_kv(const slot_info & sinfo, const llama_ubatch & ubatch) const;
 
     // get views of the current state of the cache
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
@@ -267,6 +269,9 @@ private:
     const llama_model & model;
     const llama_hparams & hparams;
 
+    // move sequences that sit high above free cells down, see seq_rm()
+    void seq_compact();
+
     struct kv_layer {
         // layer index in the model
         // note: can be different from the layer index in the KV cache
@@ -338,6 +343,8 @@ private:
         uint64_t previous_deadline_misses = 0;
         int64_t previous_adapt_us = 0;
         uint32_t previous_query_tokens = UINT32_MAX;
+        std::array<uint32_t, 16> recent_active_tokens = {};
+        uint32_t recent_active_index = 0;
 
         ~kv_stream_runtime_owner() {
             if (runtime != nullptr) {
