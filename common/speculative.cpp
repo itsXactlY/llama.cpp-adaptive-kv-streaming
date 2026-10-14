@@ -2526,6 +2526,10 @@ common_params common_base_params_to_speculative(const common_params & params) {
         if (params_spec.backend_sampling) {
             result.n_outputs_max_per_seq = per_seq;
         }
+        // token batches are only the noise blocks (prompt features go in as embd, no lm_head);
+        // a full-ubatch reserve sized the compute buffer for n_ubatch x n_vocab logits nobody decodes
+        result.n_batch  = std::min(params.n_batch, std::max<int32_t>(64, result.n_outputs_max));
+        result.n_ubatch = std::min(params.n_ubatch, result.n_batch);
     }
 
     return result;
